@@ -1,0 +1,167 @@
+name: Build and Push 3 Rust Images to ECR
+
+on:
+  push:
+    branches:
+      - main
+      - development
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  RUST_VERSION: 1.76.0 # Update this when moving to a newer version of Rust
+
+jobs:
+  build-and-push-base:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log into AWS ECR
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_SHAREDSVCS }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_SHAREDSVCS }}
+          aws-region: eu-west-2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: "true"
+
+      # Prepare RUST_BASE_IMAGE: Most Rust Service will compile the Binary within this image
+      - name: Build and push RUST_BASE_IMAGE
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: rust_base_image
+        run: |
+          echo "creating ECR and Set Policy"
+          aws s3 cp s3://sigmafinancial-devops-tools/ecr/ecr_policy.json .
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --image-scanning-configuration scanOnPush=true || true
+          aws ecr set-repository-policy --repository-name $ECR_REPOSITORY --policy-text file://ecr_policy.json || true
+
+          docker build \
+            --build-arg BUILD_CBLAS=False \
+            --build-arg RUST_VERSION=$RUST_VERSION \
+            --file docker/rust-cblas.Dockerfile . -t $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          docker build \
+            --build-arg BUILD_CBLAS=False \
+            --build-arg RUST_VERSION=$RUST_VERSION \
+            --file docker/rust-cblas.Dockerfile . -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.RUST_VERSION }}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.RUST_VERSION }}
+
+      # Logout of AWS ECR
+      - name: Logout of Amazon ECR
+        if: always()
+        run: docker logout ${{ steps.login-ecr.outputs.registry }}
+
+  build-and-push-math-base:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log into AWS ECR
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_SHAREDSVCS }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_SHAREDSVCS }}
+          aws-region: eu-west-2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: "true"
+
+      # Prepare RUST_MATH_BASE_IMAGE
+      # This image is primarily used by generic-patterns-rs as it install Math
+      # libraries required by the Pattern Matching Algorithm
+      - name: Build, tag, and push the image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: rust_math_base_image
+        run: |
+          echo "creating ECR and Set Policy"
+          aws s3 cp s3://sigmafinancial-devops-tools/ecr/ecr_policy.json .
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --image-scanning-configuration scanOnPush=true || true
+          aws ecr set-repository-policy --repository-name $ECR_REPOSITORY --policy-text file://ecr_policy.json || true
+
+          docker build --build-arg BUILD_CBLAS=True \
+            --build-arg RUST_VERSION=$RUST_VERSION \
+            --file docker/rust-cblas.Dockerfile . -t $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          docker build --build-arg BUILD_CBLAS=True \
+            --build-arg RUST_VERSION=$RUST_VERSION \
+            --file docker/rust-cblas.Dockerfile . -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.RUST_VERSION }}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.RUST_VERSION }}
+
+      # Logout of AWS ECR
+      - name: Logout of Amazon ECR
+        if: always()
+        run: docker logout ${{ steps.login-ecr.outputs.registry }}
+
+  build-and-push-deployment-base:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Log into AWS ECR
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_SHAREDSVCS }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_SHAREDSVCS }}
+          aws-region: eu-west-2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: "true"
+
+      # Prepare RUST_DEPLOYMENT_BOOKWORM_SLIM
+      #
+      # This image exists for the purpose of deployment into Kubernetes. It should only contain the minimum
+      # amount of dependencies in order to run the Compiled Rust Binary.
+      - name: Build and push rust_bookworm_slim_image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: rust_bookworm_slim_image
+        run: |
+          echo "creating ECR and Set Policy"
+          aws s3 cp s3://sigmafinancial-devops-tools/ecr/ecr_policy.json .
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --image-scanning-configuration scanOnPush=true || true
+          aws ecr set-repository-policy --repository-name $ECR_REPOSITORY --policy-text file://ecr_policy.json || true
+
+          docker build --file docker/workerbase.Dockerfile . -t $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          docker build --file docker/workerbase.Dockerfile . -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.RUST_VERSION }}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ env.RUST_VERSION }}
+
+      # Logout of AWS ECR
+      - name: Logout of Amazon ECR
+        if: always()
+        run: docker logout ${{ steps.login-ecr.outputs.registry }}
